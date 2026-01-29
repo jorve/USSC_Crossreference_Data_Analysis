@@ -16,7 +16,7 @@ Researchers and the commission alike would benefit from a reexamination of the s
 
 For clarity, the current Individual Datafiles exceed the maximum number of column entries for Microsoft Excel, ending at column XFD--that's 16,384 columns for every individual entry. Most entries use less than 1% of these columns. Further, many of these columns represent Base Offense Level Variables, Specific Offense Characteristic Variables, and Adjustment Variables that are used in the guideline calculations to determine the sentencing range. There are 40 categories Base Offense Level Variables, 25 categories of Specific Offense Characteristic Variables, and over 175 categories of Adjustment Variables--each of these categories can have hundreds of variable entries. That's potentially tens of thousands of datapoints to assess in order to check the operations of the sentencing guidelines. 
 
-This variable bloat and dataset opacity make oversight nearly impossible. As we discovered during this analysis, the lack of multiple views into the data make it nearly impossible to determine whether our analysis passes muster--comparing the subset of data we chose with the original dataset is impossible. The work for this project is publicly available here for transparency and replicability, but not the original datafiles, only the CSV files outputted from SPSS. We wanted to include such files where applicable, but the file sizes require the use of Git Large File Storage and so I am merely including the JSON and CSV files created by the `clean.py` function. For original files, please feel free to contact me or generate your own CSV files from the publicly available data on the USSC's webpage. 
+This variable bloat and dataset opacity make oversight nearly impossible. As we discovered during this analysis, the lack of multiple views into the data make it difficult to determine whether our analysis passes muster--comparing the subset of data we chose with the original dataset is prohibitively time-consuming. The work for this project is publicly available here for transparency and replicability, but not the original datafiles, only the CSV files outputted from SPSS. We wanted to include such files where applicable, but the file sizes require the use of Git Large File Storage and so I am merely including the JSON and CSV files created by the `clean.py` function. For original files, please feel free to contact me or generate your own CSV files from the publicly available data on the USSC's webpage. 
 
 Some other general data consistency issues:
 1. for some reason the column names in vintages 2004-2006 are lowercase, while all other years are uppercase. Fix for uniformity.
@@ -28,24 +28,30 @@ Some other general data consistency issues:
 
 ```
 Sentencing/
-├── clean.py                            # Data cleaning script
-├── analyze.py                          # Data analysis script
+├── clean.py                                        # Data cleaning script
+├── analyze.py                                      # Data analysis script
 ├── py/
-│   ├── dict_legend.py                  # Dictionary functions for code-to-description conversion
+│   ├── dict_legend.py                              # Dictionary functions for code-to-description conversion
 ├── data/
-│   ├── {year}/                         # Year-specific data directories (2002-2024)
-│   │   ├── opafy{YY}nid.csv            # Raw USSC data files
-│   │   ├── clean_data_{year}.json      # Cleaned JSON output
-│   │   └── clean_data_{year}.csv       # Cleaned CSV output
+│   ├── {year}/                                     # Year-specific data directories (2002-2024)
+│   │   ├── opafy{YY}nid.csv                        # Raw USSC data files
+│   │   ├── clean_data_{year}.json                  # Cleaned JSON output
+│   │   └── clean_data_{year}.csv                   # Cleaned CSV output
 │   └── csv/
-│       ├── yearly_summary.csv          # Summary statistics by year
-│       ├── district_counts.csv         # District counts by year
-│       ├── over120.csv                 # Records with TOTPRISN > 120 months
-│       ├── race_demographics.csv       # Race demographic breakdowns by year and guideline type
-│       ├── hispanic_demographics.csv   # Hispanic origin demographic breakdowns by year and guideline type
-│       ├── education_demographics.csv  # Education level demographic breakdowns by year and guideline type
-│       └── citizen_demographics.csv    # Citizenship status demographic breakdowns by year and guideline type
-└── README.md                           # This file
+│       ├── yearly_summary.csv                      # Summary statistics by year
+│       ├── gdlinehi2a_district_counts.csv          # District counts for 2A cross-reference cases (GDSTATHI=2K2.1, GDLINEHI 2A, ACCAP=0)
+│       ├── all_cases_district_counts.csv           # All processed cases by district and year
+│       ├── 18922g_qualifying_district_counts.csv   # Qualifying 18922G cases by district and year
+│       ├── gdstathi_2k21_no2a_district_counts.csv  # 2K2.1 without 2A cross-reference counts by district and year
+│       ├── gdstathi_district_averages.csv          # Average TOTPRISN by district/year for 2K2.1 without 2A
+│       ├── gdlinehi2a_district_averages.csv        # Average TOTPRISN by district/year for 2A cross-reference cases
+│       ├── over120.csv                             # Records with TOTPRISN > 120 months
+│       ├── ny_south_summary.csv                    # New York South district summary (2002-2021 and 2022-2024 buckets)
+│       ├── race_demographics.csv                   # Race demographic breakdowns by year and guideline type
+│       ├── hispanic_demographics.csv               # Hispanic origin demographic breakdowns by year and guideline type
+│       ├── education_demographics.csv              # Education level demographic breakdowns by year and guideline type
+│       └── citizen_demographics.csv                # Citizenship status demographic breakdowns by year and guideline type
+└── README.md                                       # This file
 ```
 
 ## Features
@@ -126,11 +132,28 @@ Summary statistics for each year including:
 - Cross-reference charge distributions
 - Counts of cases with TOTPRISN > 120 months
 
-### `data/csv/district_counts.csv`
-District-level counts by year, showing the distribution of cases across federal judicial districts.
+### District count and average CSVs
+
+All district CSVs use rows = districts (from the district template) and columns = years (2002–2024). Counts or averages are in the cells.
+
+| File | Contents |
+|------|----------|
+| `gdlinehi2a_district_counts.csv` | Counts by district and year for GDLINEHI 2A cross-reference cases (GDSTATHI = "2K2.1", GDLINEHI starts with "2A", ACCAP = "0"). |
+| `all_cases_district_counts.csv` | Counts of all processed cases by district and year (no statute or guideline filter). |
+| `18922g_qualifying_district_counts.csv` | Counts of qualifying 18922G cases by district and year (after 18922G/undesired-statute filter; any guideline). |
+| `gdstathi_2k21_no2a_district_counts.csv` | Counts by district and year for cases with GDSTATHI = "2K2.1" and GDLINEHI not starting with "2A". |
+| `gdstathi_district_averages.csv` | Average TOTPRISN by district and year for GDSTATHI = "2K2.1" without 2A cross-reference. |
+| `gdlinehi2a_district_averages.csv` | Average TOTPRISN by district and year for GDLINEHI 2A cross-reference cases (GDSTATHI = "2K2.1", ACCAP = "0"). |
 
 ### `data/csv/over120.csv`
 Individual records where total prison time (TOTPRISN) exceeds 120 months for cases meeting the GDLINEHI_2A criteria (2A guideline, 2K2.1 statutory guideline, and ACCAP = 0).
+
+### `data/csv/ny_south_summary.csv`
+Summary for the **New York South** district only, in two time buckets:
+- **2002–2021**
+- **2022–2024**
+
+For each bucket: total records, total 18922G cases, count and average TOTPRISN for GDSTATHI = "2K2.1" without 2A, and count and average TOTPRISN for GDLINEHI 2A with ACCAP ≠ "1".
 
 ### Demographic Data Files
 

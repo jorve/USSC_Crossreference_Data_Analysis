@@ -1,7 +1,7 @@
 import csv
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable
 from py import dict_legend as dl
 
 # Configuration constants
@@ -22,6 +22,22 @@ CROSS_REF_CHARGES = ["2A1.1", "2A1.2", "2A1.3", "2A1.4", "2A1.5", "2A2.1", "2A2.
 
 # Threshold for TOTPRISN
 TOTPRISN_THRESHOLD = 120
+
+
+def build_district_template() -> Dict[str, int]:
+    """
+    Build a zeroed district->count mapping.
+    Precomputed once and copied per-year for efficiency.
+    """
+    template: Dict[str, int] = {}
+    for code in range(97):
+        district_name = dl.district_dict(str(code))
+        if district_name != "Unknown":
+            template[district_name] = 0
+    return template
+
+
+DISTRICT_TEMPLATE = build_district_template()
 
 # this function is used to check if a list of strings has any items that start with any of the given prefixes. We are using it to filter out statutes that are not relevant to the analysis.
 def has_prefix(items: List[str], prefixes: List[str]) -> bool:
@@ -47,29 +63,34 @@ def initialize_year_data() -> Dict[str, Any]:
     Returns:
         Dictionary with initialized counters and structures
     """
-    # Initialize district counts dictionary
-    district_counts = {}
-    for code in range(97):
-        district_name = dl.district_dict(str(code))
-        if district_name != "Unknown":
-            district_counts[district_name] = 0
+    # Initialize district counts dictionary (copy precomputed template)
+    district_counts = DISTRICT_TEMPLATE.copy()
     
     return {
         "STAT_18922G": 0,
+        # Counts for all qualifying 18922G cases by district (regardless guideline)
+        "18922G_District_Counts": district_counts.copy(),
         "GDSTATHI_2K2.1": {
             "Total": 0,
+            "TOTPRISN_Sum": 0.0,
+            "TOTPRISN_Count": 0,
             "Demographics": {
                 "RACE": {},
                 "HISPANIC": {},
                 "DISTRICT": {},
                 "EDUC": {},
                 "CITIZEN": {}
-            }
+            },
+            # Track counts and sentencing averages by district for 2K2.1 without 2A
+            "District_Counts": district_counts.copy(),
+            "District_TOTPRISN": {}
         },
         "Total_Records": 0,
         "GDLINEHI_2A": {
             "Over_120_TOTPRISN_Count": 0,
             "Total": 0,
+            "TOTPRISN_Sum": 0.0,
+            "TOTPRISN_Count": 0,
             "Cross-Reference Charge": {charge: 0 for charge in CROSS_REF_CHARGES},
             "Demographics": {
                 "RACE": {},
@@ -77,9 +98,13 @@ def initialize_year_data() -> Dict[str, Any]:
                 "DISTRICT": {},
                 "EDUC": {},
                 "CITIZEN": {}
-            }
+            },
+            "District_TOTPRISN": {}  # per-district sum/count for 2A cross-reference cases
         },
-        "District_Counts": district_counts
+        # District_Counts: counts for all filtered 18922G cases by district
+        "District_Counts": district_counts.copy(),
+        # All_District_Counts: explicit alias for clarity if needed elsewhere
+        "All_District_Counts": district_counts.copy()
     }
 
 
@@ -142,6 +167,11 @@ def process_record(record: Dict[str, Any], year_data: Dict[str, Any], year: int,
     """
     record["YEAR"] = year
     year_data["Total_Records"] += 1
+
+    # Track all cases by district (before any statute filtering)
+    dist_desc = record.get("DISTRICT_DESC")
+    if dist_desc is not None and dist_desc in year_data["All_District_Counts"]:
+        year_data["All_District_Counts"][dist_desc] += 1
     
     nwstat_list = record.get("NWSTAT_LIST", [])
     
@@ -153,6 +183,11 @@ def process_record(record: Dict[str, Any], year_data: Dict[str, Any], year: int,
         return
     
     year_data["STAT_18922G"] += 1
+    
+    # Track qualifying 18922G cases by district (regardless guideline)
+    if dist_desc is not None and dist_desc in year_data["18922G_District_Counts"]:
+        year_data["18922G_District_Counts"][dist_desc] += 1
+
     gdstathi = record.get("GDSTATHI", "")
     gdlinehi = record.get("GDLINEHI", "")
     
@@ -163,10 +198,6 @@ def process_record(record: Dict[str, Any], year_data: Dict[str, Any], year: int,
         # Process records with 2K2.1 statutory guideline but not 2A cross reference guideline
         if not gdlinehi.startswith("2A"):
             totprisn = parse_totprisn(record.get("TOTPRISN"))
-            if totprisn is not None:
-                # Store for average calculation (would need to track this separately)
-                pass
-            
             # Track demographics for GDSTATHI_2K2.1
             demographics = year_data["GDSTATHI_2K2.1"]["Demographics"]
             race_desc = record.get("MONRACE_DESC")
@@ -184,6 +215,20 @@ def process_record(record: Dict[str, Any], year_data: Dict[str, Any], year: int,
             citizen_desc = record.get("CITIZEN_DESC")
             if citizen_desc is not None:
                 increment_demographic(demographics, "CITIZEN", citizen_desc)
+            
+            # Track district counts and TOTPRISN aggregates for GDSTATHI_2K2.1 (without 2A cross-reference)
+            if dist_desc is not None and dist_desc in year_data["GDSTATHI_2K2.1"]["District_Counts"]:
+                year_data["GDSTATHI_2K2.1"]["District_Counts"][dist_desc] += 1
+                if totprisn is not None:
+                    # Track for overall averages (GDSTATHI without 2A)
+                    year_data["GDSTATHI_2K2.1"]["TOTPRISN_Sum"] += totprisn
+                    year_data["GDSTATHI_2K2.1"]["TOTPRISN_Count"] += 1
+
+                    district_totprisn = year_data["GDSTATHI_2K2.1"]["District_TOTPRISN"]
+                    if dist_desc not in district_totprisn:
+                        district_totprisn[dist_desc] = {"sum": 0.0, "count": 0}
+                    district_totprisn[dist_desc]["sum"] += totprisn
+                    district_totprisn[dist_desc]["count"] += 1
     
     # Process GDLINEHI_2A records
     if (gdlinehi.startswith("2A") and 
@@ -209,10 +254,18 @@ def process_record(record: Dict[str, Any], year_data: Dict[str, Any], year: int,
             
             # Store for average calculation (would need to track this separately)
             
-            # Update district count
+            # Update district count and per-district TOTPRISN aggregates
             dist_desc = record.get("DISTRICT_DESC")
             if dist_desc is not None and dist_desc in year_data["District_Counts"]:
                 year_data["District_Counts"][dist_desc] += 1
+                # Track for overall averages (GDLINEHI 2A)
+                year_data["GDLINEHI_2A"]["TOTPRISN_Sum"] += totprisn
+                year_data["GDLINEHI_2A"]["TOTPRISN_Count"] += 1
+                district_totprisn = year_data["GDLINEHI_2A"]["District_TOTPRISN"]
+                if dist_desc not in district_totprisn:
+                    district_totprisn[dist_desc] = {"sum": 0.0, "count": 0}
+                district_totprisn[dist_desc]["sum"] += totprisn
+                district_totprisn[dist_desc]["count"] += 1
         
         # Track demographics for GDLINEHI_2A
         demographics = year_data["GDLINEHI_2A"]["Demographics"]
@@ -233,28 +286,24 @@ def process_record(record: Dict[str, Any], year_data: Dict[str, Any], year: int,
             increment_demographic(demographics, "CITIZEN", citizen_desc)
 
 
-def calculate_averages(year_data: Dict[str, Any], 
-                       gdstathi_totprisn: List[float],
-                       gdlinehi_totprisn: List[float]) -> None:
+def calculate_averages(year_data: Dict[str, Any]) -> None:
     """
     Calculate and store average TOTPRISN values.
     
     Args:
         year_data: Year data dictionary to update
-        gdstathi_totprisn: List of TOTPRISN values for GDSTATHI_Ex_2A
-        gdlinehi_totprisn: List of TOTPRISN values for GDLINEHI_2A
     """
-    if gdstathi_totprisn:
-        year_data["GDSTATHI_Ex_2A_TOTPRISN_Avg"] = round(
-            sum(gdstathi_totprisn) / len(gdstathi_totprisn), 2
-        )
+    gdstathi_sum = year_data.get("GDSTATHI_2K2.1", {}).get("TOTPRISN_Sum", 0.0)
+    gdstathi_count = year_data.get("GDSTATHI_2K2.1", {}).get("TOTPRISN_Count", 0)
+    if gdstathi_count:
+        year_data["GDSTATHI_Ex_2A_TOTPRISN_Avg"] = round(gdstathi_sum / gdstathi_count, 2)
     else:
         year_data["GDSTATHI_Ex_2A_TOTPRISN_Avg"] = 0
-    
-    if gdlinehi_totprisn:
-        year_data["GDLINEHI_2A_TOTPRISN_Avg"] = round(
-            sum(gdlinehi_totprisn) / len(gdlinehi_totprisn), 2
-        )
+
+    gdlinehi_sum = year_data.get("GDLINEHI_2A", {}).get("TOTPRISN_Sum", 0.0)
+    gdlinehi_count = year_data.get("GDLINEHI_2A", {}).get("TOTPRISN_Count", 0)
+    if gdlinehi_count:
+        year_data["GDLINEHI_2A_TOTPRISN_Avg"] = round(gdlinehi_sum / gdlinehi_count, 2)
     else:
         year_data["GDLINEHI_2A_TOTPRISN_Avg"] = 0
 
@@ -290,36 +339,13 @@ def process_year_data(json_path: str, year: int, tabbed_data: Dict[str, Any],
     tabbed_data[year_str] = initialize_year_data()
     year_data = tabbed_data[year_str]
     
-    gdstathi_totprisn = []
-    gdlinehi_totprisn = []
-    
     with open(json_path, "r", encoding="utf-8") as json_file:
         all_data = json.load(json_file)
         
         for record in all_data:
             process_record(record, year_data, year, over120_records)
-            
-            # Track TOTPRISN values for averages (simplified - would need proper tracking)
-            nwstat_list = record.get("NWSTAT_LIST", [])
-            if (any(item.startswith(DESIRED_STATUTE_PREFIX) for item in nwstat_list) and
-                not has_prefix(nwstat_list, UNDESIRED_STATUTE_PREFIXES)):
-                
-                gdstathi = record.get("GDSTATHI", "")
-                gdlinehi = record.get("GDLINEHI", "")
-                
-                if gdstathi == "2K2.1" and not gdlinehi.startswith("2A"):
-                    totprisn = parse_totprisn(record.get("TOTPRISN"))
-                    if totprisn is not None:
-                        gdstathi_totprisn.append(totprisn)
-                
-                if (gdlinehi.startswith("2A") and 
-                    gdstathi == "2K2.1" and 
-                    record.get("ACCAP") == "0"):
-                    totprisn = parse_totprisn(record.get("TOTPRISN"))
-                    if totprisn is not None:
-                        gdlinehi_totprisn.append(totprisn)
-    
-    calculate_averages(year_data, gdstathi_totprisn, gdlinehi_totprisn)
+
+    calculate_averages(year_data)
     calculate_percentage(year_data)
 
 
@@ -370,38 +396,176 @@ def export_yearly_summary(tabbed_data: Dict[str, Any], output_path: str) -> None
             writer.writerow(row)
 
 
-def export_district_counts(tabbed_data: Dict[str, Any], output_path: str) -> None:
+def _export_district_year_counts(
+    tabbed_data: Dict[str, Any],
+    output_path: str,
+    counts_getter: Callable[[Dict[str, Any]], Dict[str, int]],
+    *,
+    district_field: str = "District",
+    include_all_districts: bool = True,
+) -> None:
     """
-    Export district counts by year to CSV.
+    Generic helper to export a district-by-year count matrix to CSV.
+
+    Output format:
+    - Rows: districts (sorted)
+    - Columns: District, then each year (sorted)
+
+    Args:
+        tabbed_data: Dictionary containing all year data
+        output_path: Path to output CSV file
+        counts_getter: Callable(year_data) -> dict[district, count]
+        district_field: Name of the district column (default: "District")
+        include_all_districts: If True, include every district in DISTRICT_TEMPLATE
+    """
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    if include_all_districts:
+        sorted_districts = sorted(DISTRICT_TEMPLATE.keys())
+    else:
+        all_districts = set()
+        for year_data in tabbed_data.values():
+            district_counts = counts_getter(year_data) or {}
+            all_districts.update(district_counts.keys())
+        sorted_districts = sorted([d for d in all_districts if d is not None])
+    sorted_years = sorted(tabbed_data.keys(), key=int)
+
+    fieldnames = [district_field] + sorted_years
+
+    with open(output_path, "w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for district in sorted_districts:
+            row = {district_field: district}
+            for year in sorted_years:
+                district_counts = counts_getter(tabbed_data[year]) or {}
+                row[year] = district_counts.get(district, 0)
+            writer.writerow(row)
+
+
+def export_gdlinehi2a_district_counts(tabbed_data: Dict[str, Any], output_path: str) -> None:
+    """
+    Export district counts by year for GDLINEHI 2A cross-reference cases.
+    This exports counts for cases where GDLINEHI starts with "2A", GDSTATHI = "2K2.1", and ACCAP = "0".
     
     Args:
         tabbed_data: Dictionary containing all year data
         output_path: Path to output CSV file
     """
+    _export_district_year_counts(
+        tabbed_data,
+        output_path,
+        lambda yd: yd.get("District_Counts", {}),
+    )
+
+
+def export_all_cases_district_counts(tabbed_data: Dict[str, Any], output_path: str) -> None:
+    """
+    Export counts of all processed cases by district and year.
+    This uses the All_District_Counts structure populated in process_record,
+    which is incremented for every record before any statute filtering.
+    Includes all cases regardless of statute or guideline.
+    """
+    _export_district_year_counts(
+        tabbed_data,
+        output_path,
+        lambda yd: yd.get("All_District_Counts", {}),
+    )
+
+
+def export_18922g_qualifying_district_counts(tabbed_data: Dict[str, Any], output_path: str) -> None:
+    """
+    Export counts of qualifying 18922G cases by district and year.
+    This uses the 18922G_District_Counts structure populated in process_record
+    after the 18922G/undesired-statute filter passes.
+    Includes all qualifying 18922G cases regardless of guideline.
+    """
+    _export_district_year_counts(
+        tabbed_data,
+        output_path,
+        lambda yd: yd.get("18922G_District_Counts", {}),
+    )
+
+
+def export_gdstathi_district_averages(tabbed_data: Dict[str, Any], output_path: str) -> None:
+    """
+    Export average TOTPRISN by district and year for GDSTATHI = "2K2.1"
+    cases that do NOT have GDLINEHI starting with "2A".
+    """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    
-    # Get all unique districts across all years
-    all_districts = set()
-    for year_data in tabbed_data.values():
-        district_counts = year_data.get("District_Counts", {})
-        all_districts.update(district_counts.keys())
-    
-    # Filter out None values and sort
-    sorted_districts = sorted([d for d in all_districts if d is not None])
+
+    # Always include every district from the template (even if all zeros)
+    sorted_districts = sorted(DISTRICT_TEMPLATE.keys())
     sorted_years = sorted(tabbed_data.keys(), key=int)
-    
+
     fieldnames = ["District"] + sorted_years
-    
+
     with open(output_path, 'w', newline='') as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
-        
+
         for district in sorted_districts:
             row = {"District": district}
             for year in sorted_years:
-                district_counts = tabbed_data[year].get("District_Counts", {})
-                row[year] = district_counts.get(district, 0)
+                district_tot = (tabbed_data[year]
+                                .get("GDSTATHI_2K2.1", {})
+                                .get("District_TOTPRISN", {})
+                                .get(district))
+                if district_tot and district_tot["count"] > 0:
+                    avg = round(district_tot["sum"] / district_tot["count"], 2)
+                else:
+                    avg = 0
+                row[year] = avg
             writer.writerow(row)
+
+
+def export_gdlinehi2a_district_averages(tabbed_data: Dict[str, Any], output_path: str) -> None:
+    """
+    Export average TOTPRISN by district and year for GDLINEHI 2A cross-reference cases
+    where GDSTATHI = "2K2.1" and ACCAP = "0".
+    """
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # Always include every district from the template (even if all zeros)
+    sorted_districts = sorted(DISTRICT_TEMPLATE.keys())
+    sorted_years = sorted(tabbed_data.keys(), key=int)
+
+    fieldnames = ["District"] + sorted_years
+
+    with open(output_path, 'w', newline='') as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for district in sorted_districts:
+            row = {"District": district}
+            for year in sorted_years:
+                district_tot = (tabbed_data[year]
+                                .get("GDLINEHI_2A", {})
+                                .get("District_TOTPRISN", {})
+                                .get(district))
+                if district_tot and district_tot["count"] > 0:
+                    avg = round(district_tot["sum"] / district_tot["count"], 2)
+                else:
+                    avg = 0
+                row[year] = avg
+            writer.writerow(row)
+
+
+def export_gdstathi_2k21_no2a_district_counts(tabbed_data: Dict[str, Any], output_path: str) -> None:
+    """
+    Export GDSTATHI_2K2.1 district counts by year to CSV.
+    This exports counts for cases with GDSTATHI = "2K2.1" that don't have GDLINEHI starting with "2A".
+    
+    Args:
+        tabbed_data: Dictionary containing all year data
+        output_path: Path to output CSV file
+    """
+    _export_district_year_counts(
+        tabbed_data,
+        output_path,
+        lambda yd: yd.get("GDSTATHI_2K2.1", {}).get("District_Counts", {}),
+    )
 
 
 def export_demographic_data(tabbed_data: Dict[str, Any], 
@@ -540,6 +704,148 @@ def build_json_path(year: int) -> str:
     return f"./data/{year}/clean_data_{year}.json"
 
 
+def export_ny_south_summary(output_path: str) -> None:
+    """
+    Export summary statistics for New York South district in two time buckets:
+    - 2002-2021
+    - 2022-2024
+    
+    For each bucket, calculates:
+    - Total records
+    - Total 18922g cases
+    - Cases with GDSTATHI="2K2.1" and GDLINEHI doesn't start with "2A": count and avg TOTPRISN
+    - Cases with GDSTATHI="2K2.1" and GDLINEHI starts with "2A" and ACCAP != "1": count and avg TOTPRISN
+    """
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    
+    TARGET_DISTRICT = "New York South"
+    BUCKET1_START = 2002
+    BUCKET1_END = 2021
+    BUCKET2_START = 2022
+    BUCKET2_END = 2024
+    
+    def _init_bucket(label: str) -> Dict[str, Any]:
+        return {
+            "Time_Period": label,
+            "Total_Records": 0,
+            "Total_18922G": 0,
+            "GDSTATHI_2K2.1_No2A_Count": 0,
+            "GDSTATHI_2K2.1_No2A_Avg_TOTPRISN": 0.0,
+            "GDSTATHI_2K2.1_No2A_TOTPRISN_Sum": 0.0,
+            "GDSTATHI_2K2.1_No2A_TOTPRISN_Count": 0,
+            "GDLINEHI_2A_ACCAP_Not1_Count": 0,
+            "GDLINEHI_2A_ACCAP_Not1_Avg_TOTPRISN": 0.0,
+            "GDLINEHI_2A_ACCAP_Not1_TOTPRISN_Sum": 0.0,
+            "GDLINEHI_2A_ACCAP_Not1_TOTPRISN_Count": 0,
+        }
+
+    bucket1 = _init_bucket("2002-2021")
+    bucket2 = _init_bucket("2022-2024")
+    
+    # Process all years
+    for year in range(LOWER_BOUND, UPPER_BOUND + 1):
+        json_path = build_json_path(year)
+        try:
+            with open(json_path, "r", encoding="utf-8") as json_file:
+                all_data = json.load(json_file)
+                
+                # Determine which bucket this year belongs to
+                if BUCKET1_START <= year <= BUCKET1_END:
+                    bucket = bucket1
+                elif BUCKET2_START <= year <= BUCKET2_END:
+                    bucket = bucket2
+                else:
+                    continue
+                
+                for record in all_data:
+                    dist_desc = record.get("DISTRICT_DESC")
+                    if dist_desc != TARGET_DISTRICT:
+                        continue
+                    
+                    bucket["Total_Records"] += 1
+                    
+                    # Check if record matches desired statute criteria
+                    nwstat_list = record.get("NWSTAT_LIST", [])
+                    has_desired_statute = any(item.startswith(DESIRED_STATUTE_PREFIX) for item in nwstat_list)
+                    has_undesired_statute = has_prefix(nwstat_list, UNDESIRED_STATUTE_PREFIXES)
+                    
+                    if not (has_desired_statute and not has_undesired_statute):
+                        continue
+                    
+                    bucket["Total_18922G"] += 1
+                    
+                    gdstathi = record.get("GDSTATHI", "")
+                    gdlinehi = record.get("GDLINEHI", "")
+                    accap = record.get("ACCAP", "")
+                    totprisn = parse_totprisn(record.get("TOTPRISN"))
+                    
+                    # Cases with GDSTATHI="2K2.1" and GDLINEHI doesn't start with "2A"
+                    if gdstathi == "2K2.1" and not gdlinehi.startswith("2A"):
+                        bucket["GDSTATHI_2K2.1_No2A_Count"] += 1
+                        if totprisn is not None:
+                            bucket["GDSTATHI_2K2.1_No2A_TOTPRISN_Sum"] += totprisn
+                            bucket["GDSTATHI_2K2.1_No2A_TOTPRISN_Count"] += 1
+                    
+                    # Cases with GDSTATHI="2K2.1" and GDLINEHI starts with "2A" and ACCAP != "1"
+                    if (gdstathi == "2K2.1" and 
+                        gdlinehi.startswith("2A") and 
+                        accap != "1"):
+                        bucket["GDLINEHI_2A_ACCAP_Not1_Count"] += 1
+                        if totprisn is not None:
+                            bucket["GDLINEHI_2A_ACCAP_Not1_TOTPRISN_Sum"] += totprisn
+                            bucket["GDLINEHI_2A_ACCAP_Not1_TOTPRISN_Count"] += 1
+                            
+        except FileNotFoundError:
+            print(f"File not found for year {year}: {json_path}")
+        except Exception as e:
+            print(f"Error processing year {year} for NY South summary: {e}")
+    
+    def _finalize_bucket(bucket: Dict[str, Any]) -> None:
+        if bucket["GDSTATHI_2K2.1_No2A_TOTPRISN_Count"] > 0:
+            bucket["GDSTATHI_2K2.1_No2A_Avg_TOTPRISN"] = round(
+                bucket["GDSTATHI_2K2.1_No2A_TOTPRISN_Sum"] / bucket["GDSTATHI_2K2.1_No2A_TOTPRISN_Count"],
+                2,
+            )
+        if bucket["GDLINEHI_2A_ACCAP_Not1_TOTPRISN_Count"] > 0:
+            bucket["GDLINEHI_2A_ACCAP_Not1_Avg_TOTPRISN"] = round(
+                bucket["GDLINEHI_2A_ACCAP_Not1_TOTPRISN_Sum"] / bucket["GDLINEHI_2A_ACCAP_Not1_TOTPRISN_Count"],
+                2,
+            )
+
+    _finalize_bucket(bucket1)
+    _finalize_bucket(bucket2)
+    
+    # Prepare rows for CSV (remove intermediate sum/count fields)
+    rows = []
+    for bucket in [bucket1, bucket2]:
+        row = {
+            "Time_Period": bucket["Time_Period"],
+            "Total_Records": bucket["Total_Records"],
+            "Total_18922G": bucket["Total_18922G"],
+            "GDSTATHI_2K2.1_No2A_Count": bucket["GDSTATHI_2K2.1_No2A_Count"],
+            "GDSTATHI_2K2.1_No2A_Avg_TOTPRISN": bucket["GDSTATHI_2K2.1_No2A_Avg_TOTPRISN"],
+            "GDLINEHI_2A_ACCAP_Not1_Count": bucket["GDLINEHI_2A_ACCAP_Not1_Count"],
+            "GDLINEHI_2A_ACCAP_Not1_Avg_TOTPRISN": bucket["GDLINEHI_2A_ACCAP_Not1_Avg_TOTPRISN"],
+        }
+        rows.append(row)
+    
+    # Write CSV
+    fieldnames = [
+        "Time_Period",
+        "Total_Records",
+        "Total_18922G",
+        "GDSTATHI_2K2.1_No2A_Count",
+        "GDSTATHI_2K2.1_No2A_Avg_TOTPRISN",
+        "GDLINEHI_2A_ACCAP_Not1_Count",
+        "GDLINEHI_2A_ACCAP_Not1_Avg_TOTPRISN",
+    ]
+    
+    with open(output_path, 'w', newline='') as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def main() -> None:
     """Main function to process all years and export results."""
     tabbed_data = {}
@@ -562,12 +868,18 @@ def main() -> None:
     # Export results
     print("Exporting results...")
     export_yearly_summary(tabbed_data, "./data/csv/yearly_summary.csv")
-    export_district_counts(tabbed_data, "./data/csv/district_counts.csv")
+    export_gdlinehi2a_district_counts(tabbed_data, "./data/csv/gdlinehi2a_district_counts.csv")
+    export_all_cases_district_counts(tabbed_data, "./data/csv/all_cases_district_counts.csv")
+    export_18922g_qualifying_district_counts(tabbed_data, "./data/csv/18922g_qualifying_district_counts.csv")
+    export_gdstathi_2k21_no2a_district_counts(tabbed_data, "./data/csv/gdstathi_2k21_no2a_district_counts.csv")
+    export_gdstathi_district_averages(tabbed_data, "./data/csv/gdstathi_district_averages.csv")
+    export_gdlinehi2a_district_averages(tabbed_data, "./data/csv/gdlinehi2a_district_averages.csv")
     export_race_data(tabbed_data, "./data/csv/race_demographics.csv")
     export_hispanic_data(tabbed_data, "./data/csv/hispanic_demographics.csv")
     export_education_data(tabbed_data, "./data/csv/education_demographics.csv")
     export_citizen_data(tabbed_data, "./data/csv/citizen_demographics.csv")
     export_over120_records(over120_records, "./data/csv/over120.csv")
+    export_ny_south_summary("./data/csv/ny_south_summary.csv")
     print(f"Found {len(over120_records)} records with TOTPRISN > {TOTPRISN_THRESHOLD}")
     print("All CSV files created successfully.")
 
