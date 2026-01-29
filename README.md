@@ -2,10 +2,6 @@
 
 A Python project for analyzing US Sentencing Commission (USSC) data, focusing on firearm offenses under 18 U.S.C. § 922(g)(1) and a subset of cross-reference "crimes against the person" guideline applications.
 
-## Overview
-
-This project processes and analyzes USSC public release data from fiscal years 2002-2024. It specifically focuses on cases involving 18 U.S.C. § 922(g)(1) (felon in possession of a firearm) that are not accompanied by certain other statutes, and examines how these cases are sentenced under cross-reference guidelines, particularly the 2A guidelines. 
-
 ## Notes from the Authors
 
 The United States Sentencing Commission publishes datafiles related to federal sentencing practices for each fiscal year dating back to 2002[^1] for "researchers insterested in studying sentencing practices through quantitative methods". The effort is noble, if poorly executed. Outside of 2024, when a CSV file is made available, data is only accessible to those with licenses for IBM's SPSS statistical or Viya's SAS software packages--limiting the ability of non-institutional researchers to readily access the Commission's sentencing data. And though the CSV file is a nice gesture (given that many comma separated values (CSV) files can be opened in commonly used spreadsheet programs like Microsoft Excel) this file is too large to be viewed by such a program. 
@@ -21,8 +17,6 @@ This variable bloat and dataset opacity make oversight nearly impossible. As we 
 Some other general data consistency issues:
 1. for some reason the column names in vintages 2004-2006 are lowercase, while all other years are uppercase. Fix for uniformity.
 2. all data vintages are successfully parsed with UTF-8 encoding outside of 2023, which requires ISO-8859-1 encoding. Fix for uniformity.
-
-
 
 ## Project Structure
 
@@ -190,7 +184,6 @@ The analysis focuses on these key variables:
 - `GDLINEHI`: Cross-reference guideline (e.g., "2A1.1", "2A2.1")
 - `TOTPRISN`: Total prison time in months
 - `DISTRICT_DESC`: Federal judicial district
-- `ACCAP`: Acceptance of responsibility adjustment
 
 ## Filtering Criteria
 

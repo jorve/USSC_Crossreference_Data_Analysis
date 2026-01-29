@@ -429,18 +429,16 @@ def _export_district_year_counts(
             all_districts.update(district_counts.keys())
         sorted_districts = sorted([d for d in all_districts if d is not None])
     sorted_years = sorted(tabbed_data.keys(), key=int)
-
+    counts_by_year = {y: counts_getter(tabbed_data[y]) or {} for y in sorted_years}
     fieldnames = [district_field] + sorted_years
 
     with open(output_path, "w", newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
-
         for district in sorted_districts:
             row = {district_field: district}
             for year in sorted_years:
-                district_counts = counts_getter(tabbed_data[year]) or {}
-                row[year] = district_counts.get(district, 0)
+                row[year] = counts_by_year[year].get(district, 0)
             writer.writerow(row)
 
 
@@ -488,36 +486,41 @@ def export_18922g_qualifying_district_counts(tabbed_data: Dict[str, Any], output
     )
 
 
+def _export_district_year_averages(
+    tabbed_data: Dict[str, Any],
+    output_path: str,
+    totals_getter: Callable[[Dict[str, Any]], Dict[str, Dict[str, Any]]],
+) -> None:
+    """
+    Generic helper to export a district-by-year average TOTPRISN matrix to CSV.
+    totals_getter(year_data) must return dict[district, {"sum": float, "count": int}].
+    """
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    sorted_districts = sorted(DISTRICT_TEMPLATE.keys())
+    sorted_years = sorted(tabbed_data.keys(), key=int)
+    totals_by_year = {y: totals_getter(tabbed_data[y]) or {} for y in sorted_years}
+    fieldnames = ["District"] + sorted_years
+    with open(output_path, "w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for district in sorted_districts:
+            row: Dict[str, Any] = {"District": district}
+            for year in sorted_years:
+                dt = totals_by_year[year].get(district)
+                row[year] = round(dt["sum"] / dt["count"], 2) if dt and dt.get("count", 0) > 0 else 0
+            writer.writerow(row)
+
+
 def export_gdstathi_district_averages(tabbed_data: Dict[str, Any], output_path: str) -> None:
     """
     Export average TOTPRISN by district and year for GDSTATHI = "2K2.1"
     cases that do NOT have GDLINEHI starting with "2A".
     """
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-
-    # Always include every district from the template (even if all zeros)
-    sorted_districts = sorted(DISTRICT_TEMPLATE.keys())
-    sorted_years = sorted(tabbed_data.keys(), key=int)
-
-    fieldnames = ["District"] + sorted_years
-
-    with open(output_path, 'w', newline='') as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        writer.writeheader()
-
-        for district in sorted_districts:
-            row = {"District": district}
-            for year in sorted_years:
-                district_tot = (tabbed_data[year]
-                                .get("GDSTATHI_2K2.1", {})
-                                .get("District_TOTPRISN", {})
-                                .get(district))
-                if district_tot and district_tot["count"] > 0:
-                    avg = round(district_tot["sum"] / district_tot["count"], 2)
-                else:
-                    avg = 0
-                row[year] = avg
-            writer.writerow(row)
+    _export_district_year_averages(
+        tabbed_data,
+        output_path,
+        lambda yd: yd.get("GDSTATHI_2K2.1", {}).get("District_TOTPRISN", {}),
+    )
 
 
 def export_gdlinehi2a_district_averages(tabbed_data: Dict[str, Any], output_path: str) -> None:
@@ -525,31 +528,11 @@ def export_gdlinehi2a_district_averages(tabbed_data: Dict[str, Any], output_path
     Export average TOTPRISN by district and year for GDLINEHI 2A cross-reference cases
     where GDSTATHI = "2K2.1" and ACCAP = "0".
     """
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-
-    # Always include every district from the template (even if all zeros)
-    sorted_districts = sorted(DISTRICT_TEMPLATE.keys())
-    sorted_years = sorted(tabbed_data.keys(), key=int)
-
-    fieldnames = ["District"] + sorted_years
-
-    with open(output_path, 'w', newline='') as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        writer.writeheader()
-
-        for district in sorted_districts:
-            row = {"District": district}
-            for year in sorted_years:
-                district_tot = (tabbed_data[year]
-                                .get("GDLINEHI_2A", {})
-                                .get("District_TOTPRISN", {})
-                                .get(district))
-                if district_tot and district_tot["count"] > 0:
-                    avg = round(district_tot["sum"] / district_tot["count"], 2)
-                else:
-                    avg = 0
-                row[year] = avg
-            writer.writerow(row)
+    _export_district_year_averages(
+        tabbed_data,
+        output_path,
+        lambda yd: yd.get("GDLINEHI_2A", {}).get("District_TOTPRISN", {}),
+    )
 
 
 def export_gdstathi_2k21_no2a_district_counts(tabbed_data: Dict[str, Any], output_path: str) -> None:
@@ -814,34 +797,15 @@ def export_ny_south_summary(output_path: str) -> None:
 
     _finalize_bucket(bucket1)
     _finalize_bucket(bucket2)
-    
-    # Prepare rows for CSV (remove intermediate sum/count fields)
-    rows = []
-    for bucket in [bucket1, bucket2]:
-        row = {
-            "Time_Period": bucket["Time_Period"],
-            "Total_Records": bucket["Total_Records"],
-            "Total_18922G": bucket["Total_18922G"],
-            "GDSTATHI_2K2.1_No2A_Count": bucket["GDSTATHI_2K2.1_No2A_Count"],
-            "GDSTATHI_2K2.1_No2A_Avg_TOTPRISN": bucket["GDSTATHI_2K2.1_No2A_Avg_TOTPRISN"],
-            "GDLINEHI_2A_ACCAP_Not1_Count": bucket["GDLINEHI_2A_ACCAP_Not1_Count"],
-            "GDLINEHI_2A_ACCAP_Not1_Avg_TOTPRISN": bucket["GDLINEHI_2A_ACCAP_Not1_Avg_TOTPRISN"],
-        }
-        rows.append(row)
-    
-    # Write CSV
-    fieldnames = [
-        "Time_Period",
-        "Total_Records",
-        "Total_18922G",
-        "GDSTATHI_2K2.1_No2A_Count",
-        "GDSTATHI_2K2.1_No2A_Avg_TOTPRISN",
-        "GDLINEHI_2A_ACCAP_Not1_Count",
-        "GDLINEHI_2A_ACCAP_Not1_Avg_TOTPRISN",
+
+    NY_SOUTH_CSV_FIELDS = [
+        "Time_Period", "Total_Records", "Total_18922G",
+        "GDSTATHI_2K2.1_No2A_Count", "GDSTATHI_2K2.1_No2A_Avg_TOTPRISN",
+        "GDLINEHI_2A_ACCAP_Not1_Count", "GDLINEHI_2A_ACCAP_Not1_Avg_TOTPRISN",
     ]
-    
-    with open(output_path, 'w', newline='') as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+    rows = [{k: b[k] for k in NY_SOUTH_CSV_FIELDS} for b in (bucket1, bucket2)]
+    with open(output_path, "w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=NY_SOUTH_CSV_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -867,19 +831,22 @@ def main() -> None:
     
     # Export results
     print("Exporting results...")
-    export_yearly_summary(tabbed_data, "./data/csv/yearly_summary.csv")
-    export_gdlinehi2a_district_counts(tabbed_data, "./data/csv/gdlinehi2a_district_counts.csv")
-    export_all_cases_district_counts(tabbed_data, "./data/csv/all_cases_district_counts.csv")
-    export_18922g_qualifying_district_counts(tabbed_data, "./data/csv/18922g_qualifying_district_counts.csv")
-    export_gdstathi_2k21_no2a_district_counts(tabbed_data, "./data/csv/gdstathi_2k21_no2a_district_counts.csv")
-    export_gdstathi_district_averages(tabbed_data, "./data/csv/gdstathi_district_averages.csv")
-    export_gdlinehi2a_district_averages(tabbed_data, "./data/csv/gdlinehi2a_district_averages.csv")
-    export_race_data(tabbed_data, "./data/csv/race_demographics.csv")
-    export_hispanic_data(tabbed_data, "./data/csv/hispanic_demographics.csv")
-    export_education_data(tabbed_data, "./data/csv/education_demographics.csv")
-    export_citizen_data(tabbed_data, "./data/csv/citizen_demographics.csv")
-    export_over120_records(over120_records, "./data/csv/over120.csv")
-    export_ny_south_summary("./data/csv/ny_south_summary.csv")
+    csv_dir = "./data/csv"
+    exports = [
+        (export_yearly_summary, (tabbed_data, f"{csv_dir}/yearly_summary.csv")),
+        (export_gdlinehi2a_district_counts, (tabbed_data, f"{csv_dir}/gdlinehi2a_district_counts.csv")),
+        (export_all_cases_district_counts, (tabbed_data, f"{csv_dir}/all_cases_district_counts.csv")),
+        (export_18922g_qualifying_district_counts, (tabbed_data, f"{csv_dir}/18922g_qualifying_district_counts.csv")),
+        (export_gdstathi_2k21_no2a_district_counts, (tabbed_data, f"{csv_dir}/gdstathi_2k21_no2a_district_counts.csv")),
+        (export_gdstathi_district_averages, (tabbed_data, f"{csv_dir}/gdstathi_district_averages.csv")),
+        (export_gdlinehi2a_district_averages, (tabbed_data, f"{csv_dir}/gdlinehi2a_district_averages.csv")),
+    ]
+    for fn, args in exports:
+        fn(*args)
+    for category, name in [("RACE", "race"), ("HISPANIC", "hispanic"), ("EDUC", "education"), ("CITIZEN", "citizen")]:
+        export_demographic_data(tabbed_data, category, f"{csv_dir}/{name}_demographics.csv")
+    export_over120_records(over120_records, f"{csv_dir}/over120.csv")
+    export_ny_south_summary(f"{csv_dir}/ny_south_summary.csv")
     print(f"Found {len(over120_records)} records with TOTPRISN > {TOTPRISN_THRESHOLD}")
     print("All CSV files created successfully.")
 
