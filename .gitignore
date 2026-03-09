@@ -5,6 +5,7 @@ __pycache__/
 
 # Large CSV files
 *nid.csv
+full_data_*.json
 
 # C extensions
 *.so
